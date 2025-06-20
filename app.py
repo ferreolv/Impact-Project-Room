@@ -47,6 +47,8 @@ from pathlib import Path
 # Load app logo
 logo_img = Image.open(Path(__file__).with_name("logo.png"))
 
+st.write("🔑 Secrets loaded:", st.secrets.to_dict())
+
 # SharePoint integration
 from office365.sharepoint.client_context import ClientContext
 from office365.runtime.auth.client_credential import ClientCredential
