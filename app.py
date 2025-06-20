@@ -1,147 +1,77 @@
-"""app.py — Impact Project Room (FULL SCRIPT)
-================================================
-Entrepreneurs upload a confidential PDF + metadata. GPT‑4o extracts nine
-fields into JSON. Admins browse, filter, update status and export.
-"""
-
-import os
-from pathlib import Path
-from dotenv import load_dotenv
-
-import streamlit as st
-import openai
-
-# ── Imports & basic setup ──────────────────────────────────────────
 import os
 import io
 import json
-from datetime import datetime
-from typing import Dict, Any
-import difflib
 import random
+import difflib
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Any
 
-import fitz  # PyMuPDF
+import streamlit as st
 import openai
 import pandas as pd
-import streamlit as st
+import fitz  # PyMuPDF
 from docx import Document
 from pptx import Presentation
 import matplotlib.pyplot as plt
 from PIL import Image
 
-from pathlib import Path
+# Local .env for development; Streamlit Cloud uses st.secrets
 from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent / ".env")
 
-# Load local .env for development
-dotenv_path = Path(__file__).parent / ".env"
-load_dotenv(dotenv_path)
-
-# Load .env for local development
-from dotenv import load_dotenv
-load_dotenv()  # load .env for local development
-
-
-# ── Environment & OpenAI setup ────────────────────────────────────
-from pathlib import Path
-
-# Load app logo
-logo_img = Image.open(Path(__file__).with_name("logo.png"))
-
-st.write("🔑 Secrets loaded:", st.secrets.to_dict())
-
-# SharePoint integration
-from office365.sharepoint.client_context import ClientContext
-from office365.runtime.auth.client_credential import ClientCredential
-
-# Set Streamlit page config as the very first Streamlit call
+# ── Page config ─────────────────────────────────────────────────
 st.set_page_config(layout="wide", page_title="Impact Project Room")
-# --- Optionally, debugging .env after set_page_config ---
-# st.write(f"Looking for .env at: {dotenv_path}")         # debug
-# st.write(f".env exists: {dotenv_path.exists()}")       # debug
-# st.write("ENV OPENAI_API_KEY:", os.getenv("OPENAI_API_KEY"))  # debug
 
-# Load OpenAI API key: prefer Streamlit secrets, then environment (.env), then .env local file
-api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-# Debug: show keys available for verification (after set_page_config)
-st.write("🔑 Available keys:", list(st.secrets.keys()), "ENV OPENAI_API_KEY:", bool(os.getenv("OPENAI_API_KEY")))
-if not api_key:
+# ── OpenAI API key ────────────────────────────────────────────────
+try:
+    openai.api_key = st.secrets["OPENAI_API_KEY"]
+except KeyError:
     st.error(
-        "🔒 OPENAI_API_KEY not found.\n"
-        "- For local dev: create a .env file with OPENAI_API_KEY or set the env var.\n"
-        "- For Streamlit Cloud: add it under App Settings → Secrets."
+        "🔒 OPENAI_API_KEY missing. Add it under 'Manage app → Settings → Secrets'."
     )
     st.stop()
-openai.api_key = api_key
 
-# Show logo at top
-# Show small logo at top-right
-col1, col2 = st.columns([9, 1])
-with col2:
-    st.image(logo_img, width=60)
+# ── Logo ──────────────────────────────────────────────────────────
+logo_path = Path(__file__).with_name("logo.png")
+if logo_path.exists():
+    col1, col2 = st.columns([9, 1])
+    with col2:
+        st.image(Image.open(logo_path), width=60)
 
+# ── Constants ─────────────────────────────────────────────────────
 UPLOAD_FOLDER = "submissions"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 AI_FIELDS = [
-    "Project Name",
-    "Specific Sector(s)",
-    "Region of operation",                 # Global, Western Economies, Africa, Asia, SEA, Latam
-    "Main country of current operations",
-    "Business Model",
-    "Maturity stage",
-    "Core team",                               # leadership team
-    "Key risks",
-    "Last 12 months revenues (USD)",
-    "Breakeven year",
-    "Market size or SOM (USD)",
-    "Expected IRR (%)",
-    "Financing need or round size (USD)",
-    "Instrument",
-    "Use of proceeds (%)",
-    "Impact Area",
-    "3 main SDGs targeted",
-    "Problem",
-    "Solution",
-    "Barrier(s) to entry",
+    "Project Name", "Specific Sector(s)", "Region of operation", "Main country of current operations",
+    "Business Model", "Maturity stage", "Core team", "Key risks",
+    "Last 12 months revenues (USD)", "Breakeven year", "Market size or SOM (USD)",
+    "Expected IRR (%)", "Financing need or round size (USD)", "Instrument",
+    "Use of proceeds (%)", "Impact Area", "3 main SDGs targeted",
+    "Problem", "Solution", "Barrier(s) to entry",
 ]
-
 REVIEW_STAGES = [
-    "Identified",
-    "Intro call",
-    "NDA and Deck",
-    "Financials",
-    "4-pager",
-    "IC1",
-    "IC2",
-    "Local DD",
-    "Raised",
-    "Operating",
-    "Exited",
-    "Bankrupt",
+    "Identified", "Intro call", "NDA and Deck", "Financials", "4-pager",
+    "IC1", "IC2", "Local DD", "Raised", "Operating", "Exited", "Bankrupt",
 ]
-
-# Options for the entrepreneur submission form
+SDG_OPTIONS = [
+    "No poverty (SDG 1)", "Zero hunger (SDG 2)", "Good health and well-being (SDG 3)",
+    "Quality education (SDG 4)", "Gender equality (SDG 5)", "Clean water and sanitation (SDG 6)",
+    "Affordable and clean energy (SDG 7)", "Decent work and economic growth (SDG 8)",
+    "Industry, innovation and infrastructure (SDG 9)", "Reduced inequalities (SDG 10)",
+    "Sustainable cities and communities (SDG 11)", "Responsible consumption and production (SDG 12)",
+    "Climate action (SDG 13)", "Life below water (SDG 14)", "Life on land (SDG 15)",
+    "Peace, justice, and strong institutions (SDG 16)", "Partnerships for the goals (SDG 17)",
+]
+MATURITY_STAGES = ["Ideation", "Validation", "Pilot", "Growth", "Scale", "Mature"]
 SECTOR_OPTIONS = [
-    "Agriculture",
-    "Air",
-    "Biodiversity & ecosystems",
-    "Climate",
-    "Diversity & inclusion",
-    "Education",
-    "Employment / Livelihoods creation",
-    "Energy",
-    "Financial services",
-    "Health",
-    "Infrastructure",
-    "Land",
-    "Oceans & coastal zones",
-    "Sustainable cities",
-    "Sustainable consumption & production",
-    "Sustainable tourism",
-    "Water Treatment",
-    "Other",
+    "Agriculture", "Air", "Biodiversity & ecosystems", "Climate", "Diversity & inclusion",
+    "Education", "Employment / Livelihoods creation", "Energy", "Financial services",
+    "Health", "Infrastructure", "Land", "Oceans & coastal zones",
+    "Sustainable cities", "Sustainable consumption & production", "Sustainable tourism",
+    "Water Treatment", "Other",
 ]
-
 # ISO‑style country display list 
 COUNTRY_OPTIONS = [
     "Afghanistan","Albania","Algeria","American Samoa","Andorra","Angola",
@@ -225,123 +155,84 @@ MATURITY_STAGES = [
     "Mature",
 ]
 
-# Fuzzy-matching helper for SDGs
+# ── Helpers ────────────────────────────────────────────────────────
 def _match_sdgs(raw_list):
-    """
-    Fuzzy-match a list of raw SDG strings to the canonical SDG_OPTIONS.
-    Returns up to 3 unique best matches with cutoff=0.6.
-    """
     matched = []
     for s in raw_list:
-        candidates = difflib.get_close_matches(s, SDG_OPTIONS, n=1, cutoff=0.6)
-        if candidates and candidates[0] not in matched:
-            matched.append(candidates[0])
+        cands = difflib.get_close_matches(s, SDG_OPTIONS, n=1, cutoff=0.6)
+        if cands and cands[0] not in matched:
+            matched.append(cands[0])
         if len(matched) >= 3:
             break
     return matched
-
-# ── Utility helpers ───────────────────────────────────────────────
 
 def extract_text_from_pdf(path: str) -> str:
     doc = fitz.open(path)
     return "\n".join(page.get_text() for page in doc)
 
-
-# Extract text from various file types (PDF, DOCX, PPTX, XLSX)
 def extract_text_from_file(path: str) -> str:
-    """
-    Extract text from a PDF, DOCX, PPTX, or XLSX file based on its extension.
-    """
     ext = Path(path).suffix.lower()
-    if ext == ".pdf":
-        return extract_text_from_pdf(path)
-    elif ext == ".docx":
+    if ext == ".pdf": return extract_text_from_pdf(path)
+    if ext == ".docx":
         doc = Document(path)
-        return "\n".join(para.text for para in doc.paragraphs)
-    elif ext == ".pptx":
+        return "\n".join(p.text for p in doc.paragraphs)
+    if ext == ".pptx":
         prs = Presentation(path)
-        texts = []
-        for slide in prs.slides:
-            for shape in slide.shapes:
-                if hasattr(shape, "text"):
-                    texts.append(shape.text)
-        return "\n".join(texts)
-    elif ext in [".xls", ".xlsx"]:
-        try:
-            df = pd.read_excel(path)
-            return df.to_csv(index=False)
-        except Exception:
-            return ""
-    else:
-        return ""
-
+        return "\n".join(
+            shape.text
+            for slide in prs.slides
+            for shape in slide.shapes
+            if hasattr(shape, "text")
+        )
+    if ext in (".xls", ".xlsx"):
+        try: return pd.read_excel(path).to_csv(index=False)
+        except: return ""
+    return ""
 
 def _parse_json_from_string(payload: str) -> Dict[str, Any]:
-    payload = payload.strip()
-    try:
-        return json.loads(payload)
-    except Exception:
-        if "{" in payload and "}" in payload:
-            snippet = payload[payload.find("{") : payload.rfind("}") + 1]
-            try:
-                return json.loads(snippet)
-            except Exception:
-                pass
+    try: return json.loads(payload)
+    except:
+        if '{' in payload and '}' in payload:
+            snippet = payload[payload.find('{'):payload.rfind('}')+1]
+            try: return json.loads(snippet)
+            except: pass
     return {}
 
-
 def summarize_project_with_gpt(full_text: str) -> Dict[str, Any]:
-    """
-    Extract structured impact project fields from text using a direct JSON prompt.
-    Falls back missing keys to "Unknown".
-    """
-    # Truncate to fit context window
     text = full_text[:15000]
-
-    # Build system prompt with explicit JSON schema
     system_prompt = (
         "You are an expert impact investment analyst. "
-        "Extract the following fields from the pitch content and return only a valid JSON object "
-        "with these keys (no extra text): "
+        "Extract these fields and return only a JSON object with keys: "
         + ", ".join(AI_FIELDS)
-        + "."
     )
     user_prompt = f"Pitch Content:\n{text}"
-
     try:
         resp = openai.ChatCompletion.create(
             model="gpt-3.5-turbo-16k",
             messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role":"system","content":system_prompt},
+                {"role":"user","content":user_prompt},
             ],
             temperature=0.0,
             max_tokens=2000,
         )
-        raw_output = resp.choices[0].message.content.strip()
-        # Parse JSON payload from the response
-        summary = _parse_json_from_string(raw_output)
+        raw = resp.choices[0].message.content.strip()
+        summary = _parse_json_from_string(raw)
     except Exception as e:
         st.error(f"OpenAI API error: {e}")
         summary = {}
-
-    # Ensure every expected field exists
-    for key in AI_FIELDS:
-        summary.setdefault(key, "Unknown")
-
+    for k in AI_FIELDS:
+        summary.setdefault(k, "Unknown")
     return summary
-
 
 def render_summary_grid(summary: Dict[str, Any]):
     cols = st.columns(3)
-    for idx, field in enumerate(AI_FIELDS):
+    for i, field in enumerate(AI_FIELDS):
         val = summary.get(field, "–")
         if isinstance(val, list):
-            val = "; ".join(
-                f"{m.get('Name','')} ({m.get('Role','')})" if isinstance(m, dict) else str(m)
-                for m in val
-            )
-        cols[idx % 3].markdown(f"**{field}**  \n{val}")
+            val = "; ".join(str(x) for x in val)
+        cols[i%3].markdown(f"**{field}**  \
+{val}")
 
 # ── Helper: save the submission to disk ───────────────────────────
 def _save_submission(meta: dict, files, summary: dict):
