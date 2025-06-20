@@ -311,7 +311,7 @@ def summarize_project_with_gpt(full_text: str) -> Dict[str, Any]:
     try:
         resp = openai.ChatCompletion.create(
             model="gpt-3.5-turbo-16k",
-            st.text_area("raw_ai", raw, height=300)
+            st.text_area("raw_ai", raw, height=300),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
