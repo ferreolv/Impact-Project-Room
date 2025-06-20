@@ -199,28 +199,36 @@ def _parse_json_from_string(payload: str) -> Dict[str, Any]:
     return {}
 
 def summarize_project_with_gpt(full_text: str) -> Dict[str, Any]:
-    text = full_text[:15000]
+    """
+    Extract structured impact project fields from text using a direct JSON prompt.
+    Falls back missing keys to "Unknown".
+    """
+    text = full_text[:15000]                       # keep context small enough
+
     system_prompt = (
-        "You are an expert impact investment analyst. "
-        "Extract these fields and return only a JSON object with keys: "
-        + ", ".join(AI_FIELDS)
+        "You are an expert impact-investment analyst. "
+        "Return **only** a JSON object with these keys: "
+        + ", ".join(AI_FIELDS) + "."
     )
     user_prompt = f"Pitch Content:\n{text}"
+
     try:
         resp = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo-16k",
+            model="gpt-3.5-turbo-16k",             # or "gpt-4o-mini" if enabled
             messages=[
-                {"role":"system","content":system_prompt},
-                {"role":"user","content":user_prompt},
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": user_prompt},
             ],
             temperature=0.0,
-            max_tokens=2000,
+            max_tokens=1500,
         )
-        raw = resp.choices[0].message.content.strip()
-        summary = _parse_json_from_string(raw)
+        raw_output = resp.choices[0].message.content.strip()
+        summary = _parse_json_from_string(raw_output)
     except Exception as e:
         st.error(f"OpenAI API error: {e}")
         summary = {}
+
+    # ensure all expected keys exist
     for k in AI_FIELDS:
         summary.setdefault(k, "Unknown")
     return summary
